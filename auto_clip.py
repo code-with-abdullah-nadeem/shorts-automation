@@ -17,7 +17,8 @@ from common import ROOT, AUTO, WORK, OUTPUT, QUEUE, STATE, LOCK, config, load, s
 from render import render_short
 from facecam import find_facecam, find_facecam_auto, track_face
 
-YTDLP = [sys.executable, "-m", "yt_dlp", "--js-runtimes", "node", "--no-warnings"]
+YTDLP = [sys.executable, "-m", "yt_dlp", "--js-runtimes", "node", "--no-warnings",
+         "--retries", "10", "--fragment-retries", "50", "--retry-sleep", "fragment:exp=1:20", "-N", "4"]
 COOKIES = ROOT / "youtube" / "cookies.txt"  # optional: cookies of a spare YouTube account, if YouTube asks to "confirm you're not a bot"
 if COOKIES.exists():
     YTDLP += ["--cookies", str(COOKIES)]
@@ -36,6 +37,14 @@ def ytdlp_json(url, *extra):
         err = [l for l in (out.stderr or "").splitlines() if "ERROR" in l] or (out.stderr or "yt-dlp failed").strip().splitlines()[-1:]
         raise RuntimeError(err[-1] if err else "yt-dlp failed")
     return json.loads(out.stdout)
+
+
+def download(cmd):
+    """Run a yt-dlp download; on failure raise with yt-dlp's own error line (not just the exit code)."""
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=ENV)
+    if r.returncode != 0:
+        lines = [l for l in (r.stderr or "").splitlines() if "ERROR" in l] or (r.stderr or "").strip().splitlines()[-3:]
+        raise RuntimeError("download failed: " + (" | ".join(lines)[-400:] or f"exit {r.returncode}"))
 
 
 class BotBlocked(RuntimeError):
@@ -240,7 +249,7 @@ def process(ch, url, force=False):
         audio = wd / "audio.m4a"
         if not audio.exists():
             log("  downloading audio")
-            subprocess.run([*YTDLP, "-f", "139/140/bestaudio[ext=m4a]", "-o", str(audio), url], check=True, capture_output=True)
+            download([*YTDLP, "-f", "139/140/bestaudio[ext=m4a]", "-o", str(audio), url])
         peaks, dur = loud_peaks(audio, cfg.get("candidates_per_stream", 10), cfg.get("skip_minutes_start", 10) * 60)
         log(f"  {len(peaks)} candidate moments: {[f'{p // 3600}:{p % 3600 // 60:02}:{p % 60:02}' for p in peaks]}")
         h = cfg.get("max_source_height", 1440)
@@ -248,9 +257,9 @@ def process(ch, url, force=False):
         if missing:
             log(f"  downloading {len(missing)} video sections (<= {h}p)")
             secs = [a for p in missing for a in ("--download-sections", f"*{p - PRE}-{p + POST}")]
-            subprocess.run([*YTDLP, "-f", f"bv*[height<={h}]+ba[ext=m4a]/b[height<={h}]", "--merge-output-format", "mp4",
+            download([*YTDLP, "-f", f"bv*[height<={h}]+ba[ext=m4a]/b[height<={h}]", "--merge-output-format", "mp4",
                             *secs, "--force-keyframes-at-cuts", "-o", str(wd / "clips" / "c_%(section_start)06d.%(ext)s"), url],
-                           check=True, capture_output=True)
+                           )
         clips = []
         for p in peaks:
             f = wd / "clips" / f"c_{p - PRE:06d}.mp4"
@@ -315,7 +324,7 @@ def process(ch, url, force=False):
         return made
     except Exception as e:
         state = load(STATE, {"streams": {}, "runs": []})
-        msg = f"{e} {getattr(e, 'stderr', b'') or ''}"
+        msg = str(e)
         if BOT_BLOCK in msg:  # temporary YouTube block: retry next run without using up a retry
             state["streams"][vid].update({"status": "waiting", "error": "YouTube is blocking downloads for now (bot check). Retrying on the next run.",
                                           "retries": retries - 1, "finished": now()})
