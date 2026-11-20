@@ -97,5 +97,6 @@
   "caption_styles": [
     "karaoke",
     "punch"
-  ]
+  ],
+  "claude_model": "sonnet"
 }

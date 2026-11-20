@@ -200,7 +200,7 @@ Reply with ONLY a JSON array, no prose:
 
 {chr(10).join(parts)}"""
     try:
-        out = subprocess.run([claude, "-p", "--output-format", "text"], input=prompt, capture_output=True,
+        out = subprocess.run([claude, "-p", "--model", cfg.get("claude_model", "sonnet"), "--output-format", "text"], input=prompt, capture_output=True,
                              text=True, encoding="utf-8", timeout=600).stdout
         m = re.search(r"\[.*\]", out, re.S)
         return json.loads(m.group(0)) if m else None
