@@ -299,7 +299,7 @@ def process(ch, url, force=False):
             queue = [q for q in queue if q["id"] != sid]
             queue.append({
                 "id": sid, "stream_id": vid, "stream_title": title, "channel": ch["name"],
-                "stream_time": c["peak_abs"], "file": str(out.relative_to(ROOT)), "title": t_title[:100],
+                "stream_time": c["peak_abs"], "file": out.relative_to(ROOT).as_posix(), "title": t_title[:100],
                 "hook": p.get("hook", ""), "tags": list(dict.fromkeys(ch.get("tags", []) + p.get("tags", [])))[:12],
                 "description": f"{t_title}\n\n{ch.get('credit', '')}\nFull stream: https://youtu.be/{vid}",
                 "duration": round(e - s, 1), "created": now(), "status": "ready", "error": None, "attempts": 0,

@@ -1,0 +1,49 @@
+name: Sync (uploads, dashboard, YouTube status)
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: shorts-state          # one run at a time touches the queue
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write               # lets dashboard buttons start the clip workflow
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CLOUD_STATE: "1"
+      SHORTS_DATA: ${{ github.workspace }}/data
+      TZ: Asia/Karachi
+      BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+      AGENT_TOKEN: ${{ secrets.AGENT_TOKEN }}
+      DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Install
+        run: |
+          sudo apt-get install -y -q ffmpeg >/dev/null
+          pip install -q google-api-python-client==2.202.0 google-auth==2.61.0 google-auth-oauthlib==1.5.0 numpy==2.5.5
+          npm install --no-save --silent @vercel/blob@2.8.2
+      - name: Restore state
+        env:
+          YT_CLIENT_SECRET_JSON: ${{ secrets.YT_CLIENT_SECRET_JSON }}
+          YT_TOKEN_JSON: ${{ secrets.YT_TOKEN_JSON }}
+        run: |
+          python cloudstate.py pull
+          mkdir -p "$SHORTS_DATA/youtube"
+          printf '%s' "$YT_CLIENT_SECRET_JSON" > "$SHORTS_DATA/youtube/client_secret.json"
+          [ -s "$SHORTS_DATA/youtube/token_agent.json" ] || printf '%s' "$YT_TOKEN_JSON" > "$SHORTS_DATA/youtube/token_agent.json"
+      - name: Agent
+        run: python agent.py
+      - name: Save state
+        if: always()
+        run: python cloudstate.py push

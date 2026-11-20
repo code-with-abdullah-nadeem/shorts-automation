@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cloudstate import ensure_media
 from common import ROOT, AUTO, DATA_AUTO, QUEUE, STATE, YT_DIR, config, secrets, load, save, log, now, running
 
 SCOPES = ["https://www.googleapis.com/auth/youtube"]
@@ -56,7 +57,7 @@ def import_legacy(queue):
         queue.append({
             "id": f"legacy_{s['clip']}", "stream_id": "irNhWMG560k", "stream_title": "CARRYMINATI PLAYS GTA VI | NO PROMOTIONS",
             "channel": "CarryisLive", "stream_time": int(s["clip"].split("_")[1]) + 45,
-            "file": str(Path(plan["out_dir"]) / fname), "title": s["title"], "hook": s["hook"], "tags": s["tags"],
+            "file": (Path(plan["out_dir"]) / fname).as_posix(), "title": s["title"], "hook": s["hook"], "tags": s["tags"],
             "description": f"{s['title']}\n\n{plan.get('credit', '')}\n\n#shorts #gta6 #carryminati", "duration": 60.0,
             "created": "2026-11-19T22:45:00+05:00", "status": "uploaded" if up else "ready", "error": None, "attempts": 0,
             "yt_id": up["id"] if up else None, "publish_at": up["publish_at"] if up else None, "yt": {},
@@ -123,15 +124,21 @@ def snapshot(queue, upload_info):
     state = load(STATE, {"streams": {}, "runs": []})
     items = []
     for q in queue:
+        if not q.get("thumb"):  # kept in the queue so runs without the video still have it
+            q["thumb"] = thumbnail(q)
         d = dict(q)
         d["file"] = Path(q["file"]).name
         d["view"] = view_status(q)
-        d["thumb"] = thumbnail(q)
         items.append(d)
     streams = [{"id": k, **v} for k, v in state.get("streams", {}).items()]
     streams.sort(key=lambda s: s.get("started", ""), reverse=True)
     clip = running()
-    sched = load(DATA_AUTO / "schedule.json", {})  # written by worker.py on the cloud server
+    sched = load(DATA_AUTO / "schedule.json", {})  # written by worker.py on a cloud server
+    if os.environ.get("CLOUD_STATE") == "1":  # GitHub Actions: clip workflow runs at 00:00, 03:00, ... UTC
+        from datetime import timezone
+        u = datetime.now(timezone.utc)
+        nxt_utc = u.replace(minute=0, second=0, microsecond=0) + timedelta(hours=3 - u.hour % 3)
+        sched = {"next_clip_run": nxt_utc.astimezone().isoformat()}
     try:  # when the scheduler will next look for new streams on its own
         if sched.get("next_clip_run"):
             raise StopIteration
@@ -143,12 +150,12 @@ def snapshot(queue, upload_info):
         next_clip = sched["next_clip_run"]
     except Exception:
         next_clip = None
-    return {"next_clip_run": next_clip, "generated": now(), "host": socket.gethostname(), "items": items, "streams": streams[:30],
+    return {"next_clip_run": next_clip, "generated": now(), "host": "GitHub Actions" if os.environ.get("GITHUB_ACTIONS") else socket.gethostname(), "items": items, "streams": streams[:30],
             "runs": state.get("runs", [])[-30:], "upload": {**cfg.get("upload", {}), **upload_info},
             "clipping": {k: clip.get(k) for k in ("started", "trigger", "url", "step")} if clip else None,
             "settings": {"short_seconds": [cfg.get("short_min_seconds", 30), cfg.get("short_max_seconds", 40)],
                          "channels": [c["name"] for c in cfg.get("channels", [])],
-                         "clip_every_hours": cfg.get("clip_every_hours", 6), "sync_every_minutes": 5}}
+                         "clip_every_hours": cfg.get("clip_every_hours", 6), "sync_every_minutes": 15 if os.environ.get("CLOUD_STATE") == "1" else 5}}
 
 
 # ---------- actions from the dashboard ----------
@@ -157,6 +164,11 @@ YT_URL = re.compile(r"^https://(www\.|m\.)?(youtube\.com/(watch\?v=|live/|shorts
 
 def start_clipping(trigger, url=None):
     """Start auto_clip.py in the background (it keeps running after this agent run ends)."""
+    if os.environ.get("CLOUD_STATE") == "1":  # GitHub Actions: start the clip workflow instead of a local process
+        args = ["gh", "workflow", "run", "clip.yml", "--repo", os.environ["GITHUB_REPOSITORY"]] + (["-f", f"url={url}"] if url else [])
+        r = subprocess.run(args, capture_output=True, text=True)
+        log(f"started clip workflow ({trigger}{': ' + url if url else ''})" if r.returncode == 0 else f"could not start clip workflow: {r.stderr[-200:]}")
+        return r.returncode == 0
     if running():
         log("clipping already running; dashboard request ignored")
         return False
@@ -235,9 +247,15 @@ def remove_music(q, yt_factory):
     """Copyright fix: keep only voices (Demucs vocal stem), re-render, queue the clean copy for upload,
     and make the claimed original private. Returns the new queue item."""
     import shutil, tempfile
-    src = ROOT / q["file"]
-    if not src.exists():
-        raise RuntimeError(f"local file missing: {q['file']}")
+    src = ensure_media(q)
+    if not src:
+        raise RuntimeError(f"video file missing: {q['file']}")
+    try:
+        import demucs  # noqa: F401  (not preinstalled on GitHub runners: install on first use)
+    except ImportError:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--index-url", "https://download.pytorch.org/whl/cpu",
+                        "torch==2.15.0"], check=True)
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "demucs==4.1.0", "soundfile==0.14.0"], check=True)
     q["_prev_status"], q["status"] = q["status"], "fixing"
     new_id = q["id"].split("__nomusic")[0] + "__nomusic"
     out = DATA_AUTO / "output" / f"{new_id}.mp4"
@@ -261,7 +279,7 @@ def remove_music(q, yt_factory):
     q.pop("_prev_status", None)
     log(f"  clean version ready: {out.name}")
     return {**{k: v for k, v in q.items() if k not in ("note", "uploaded")}, "id": new_id,
-            "file": str(out.relative_to(ROOT)), "status": "ready", "error": None, "attempts": 0, "yt_id": None,
+            "file": out.relative_to(ROOT).as_posix(), "status": "ready", "error": None, "attempts": 0, "yt_id": None,
             "publish_at": None, "yt": {}, "created": now(), "replaces": q["id"], "priority": True}
 
 
@@ -288,9 +306,9 @@ def upload_due(queue, yt):
     todo = sorted((q for q in queue if q["status"] == "ready"), key=lambda q: (not q.get("priority"), -(q.get("score") or 0)))[: up.get("max_per_run", 4)]
     gen = slots(queue)
     for q in todo:
-        f = ROOT / q["file"]
-        if not f.exists():
-            q.update(status="failed", error=f"file missing: {q['file']}")
+        f = ensure_media(q)
+        if not f:
+            q.update(status="failed", error=f"video file missing: {q['file']}")
             continue
         when = next(gen)
         body = {"snippet": {"title": q["title"][:100], "description": q.get("description", ""), "tags": q.get("tags", []),
@@ -369,11 +387,14 @@ def refresh_status(queue, yt):
             q["yt"] = {"missing": True, "checked": now()}
             continue
         st, sx, cd = v.get("status", {}), v.get("statistics", {}), v.get("contentDetails", {})
+        prev = q.get("yt") or {}
         q["yt"] = {"privacy": st.get("privacyStatus"), "upload_status": st.get("uploadStatus"),
                    "failure": st.get("failureReason"), "rejection": st.get("rejectionReason"),
                    "publish_at": st.get("publishAt"), "views": int(sx.get("viewCount", 0)),
                    "likes": int(sx.get("likeCount", 0)), "comments": int(sx.get("commentCount", 0)),
-                   "issues": restrictions(st, cd), "checked": now()}
+                   "issues": restrictions(st, cd)}
+        old = {k: v for k, v in prev.items() if k != "checked"}
+        q["yt"]["checked"] = prev.get("checked") if old == q["yt"] else now()  # only changes when YouTube's data does
     return queue
 
 
@@ -405,6 +426,7 @@ def main():
     save_queue(queue)
     nxt = next(slots(queue))
     resp = dashboard_call("/api/agent/sync", {"snapshot": snapshot(queue, {"next_slot": nxt.isoformat()}), "phase": "end"})
+    save_queue(queue)  # keeps thumbnails generated for the snapshot
     if resp and resp.get("actions"):  # clicked while we were uploading: handle now
         queue = apply_actions(queue, resp["actions"], get_yt)
         save_queue(queue)

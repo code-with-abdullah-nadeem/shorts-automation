@@ -12,3 +12,7 @@ schedule.json
 clip.lock
 *.log
 *.tmp
+node_modules/
+data/
+.cache/
+*.blobsha
