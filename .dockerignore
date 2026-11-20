@@ -1,0 +1,14 @@
+# data and secrets live on the Railway volume, never in the image
+work/
+output/
+thumbs/
+__pycache__/
+*.pyc
+queue.json
+state.json
+secrets.json
+schedule.json
+clip.lock
+*.log
+*.tmp
+setup_tasks.ps1

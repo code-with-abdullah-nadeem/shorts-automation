@@ -1,0 +1,14 @@
+# data, secrets and caches never go in the repo
+work/
+output/
+thumbs/
+seed/
+__pycache__/
+*.pyc
+queue.json
+state.json
+secrets.json
+schedule.json
+clip.lock
+*.log
+*.tmp

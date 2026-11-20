@@ -1,0 +1,101 @@
+{
+  "channels": [
+    {
+      "name": "CarryisLive",
+      "streams_url": "https://www.youtube.com/@CarryisLive/streams",
+      "credit": "Stream: CarryisLive (CarryMinati)",
+      "tags": [
+        "carryminati",
+        "carryislive"
+      ],
+      "facecam": {
+        "template": "templates/carryislive_banner.png",
+        "offset": [
+          104,
+          -12
+        ],
+        "box": [
+          370,
+          262
+        ]
+      },
+      "language": "hi"
+    },
+    {
+      "name": "IShowSpeed",
+      "streams_url": "https://www.youtube.com/@IShowSpeed/streams",
+      "credit": "Stream: IShowSpeed",
+      "tags": [
+        "ishowspeed",
+        "speed"
+      ],
+      "language": null
+    },
+    {
+      "name": "Jelly",
+      "streams_url": "https://www.youtube.com/@Jelly/streams",
+      "credit": "Stream: Jelly",
+      "tags": [
+        "jelly"
+      ],
+      "language": null
+    },
+    {
+      "name": "Ducky Bhai",
+      "streams_url": "https://www.youtube.com/@DuckyBhai/streams",
+      "credit": "Stream: Ducky Bhai",
+      "tags": [
+        "duckybhai",
+        "ducky bhai"
+      ],
+      "language": "ur"
+    }
+  ],
+  "look_back": 5,
+  "max_streams_per_run": 1,
+  "candidates_per_stream": 10,
+  "max_shorts_per_stream": 6,
+  "skip_minutes_start": 10,
+  "short_min_seconds": 30,
+  "short_max_seconds": 40,
+  "max_source_height": 1440,
+  "whisper": {
+    "model": "medium",
+    "task": "translate",
+    "language": null
+  },
+  "upload": {
+    "per_day": 2,
+    "times": [
+      "13:00",
+      "19:00"
+    ],
+    "max_per_run": 4
+  },
+  "dashboard_url": "https://shorts-dashboard-ten.vercel.app",
+  "title_keywords": [
+    "gta 6",
+    "gta vi",
+    "gta6",
+    "gtavi",
+    "vice city",
+    "grand theft auto vi"
+  ],
+  "search": {
+    "enabled": true,
+    "queries": [
+      "gta 6 live stream",
+      "gta 6 stream",
+      "gta vi gameplay live"
+    ],
+    "per_query": 20,
+    "min_views": 100000,
+    "min_duration_minutes": 60
+  },
+  "clip_every_hours": 3,
+  "min_virality_score": 5.5,
+  "caption_styles": [
+    "karaoke",
+    "punch"
+  ]
+}
