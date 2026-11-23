@@ -375,7 +375,7 @@ def run_jobs(a):
             run["note"] = "No new finished streams"
     for ch, url in jobs:
         try:
-            run["made"] += process(ch, url, a.force)
+            run["made"] += process(ch, url, a.force or bool(a.url))  # a pasted link is always (re)clipped
         except BotBlocked:
             log("YouTube is blocking downloads (bot check); will retry next run")
             run["note"] = "YouTube blocked downloads (bot check); retrying next run"
