@@ -22,7 +22,7 @@ YTDLP = [sys.executable, "-m", "yt_dlp", "--js-runtimes", "node", "--no-warnings
 COOKIES = ROOT / "youtube" / "cookies.txt"  # optional: cookies of a spare YouTube account, if YouTube asks to "confirm you're not a bot"
 if COOKIES.exists():
     YTDLP += ["--cookies", str(COOKIES)]
-BOT_BLOCK = "not a bot"
+BOT_BLOCK = ("not a bot", "content isn’t available", "content isn't available")  # YouTube refusing this server
 PRE, POST = 45, 65  # seconds of video kept around each peak
 cfg = config()
 
@@ -138,24 +138,99 @@ def loud_peaks(audio, n, skip_s, gap_s=360):
     return sorted(picked), len(lv)
 
 
-def transcribe(clips, wcfg):
+INDIC = {"hi", "ur"}  # spoken Hindi/Urdu: captions + titles in Roman-script Hinglish
+_WHISPER = []
+
+
+def whisper(wcfg):
+    if not _WHISPER:
+        from faster_whisper import WhisperModel
+        _WHISPER.append(WhisperModel(wcfg.get("model", "medium"), device="cpu", compute_type="int8"))
+    return _WHISPER[0]
+
+
+def clip_audio(f):
     import numpy as np
-    from faster_whisper import WhisperModel
-    model = WhisperModel(wcfg.get("model", "medium"), device="cpu", compute_type="int8")
+    pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", str(f), "-ac", "1", "-ar", "16000", "-f", "s16le", "-"],
+                         capture_output=True, check=True).stdout
+    return np.frombuffer(pcm, np.int16).astype(np.float32) / 32768.0
+
+
+def run_whisper(wcfg, audio, task, language):
+    segs, info = whisper(wcfg).transcribe(audio, task=task, language=language, vad_filter=True, word_timestamps=True, beam_size=5)
+    return [(round(w.start, 2), round(w.end, 2), w.word) for sg in segs for w in (sg.words or [])], info.language
+
+
+def transcribe(clips, wcfg, language=None):
+    """Words with timestamps per clip. Hindi/Urdu stay as spoken (romanized later), English stays English,
+    anything else is translated to English. Sets c["words"] and c["lang"]."""
     for c in clips:
         tf = c["file"].with_suffix(".words.json")
-        if tf.exists():
-            c["words"] = load(tf, [])
+        data = load(tf, None)
+        if isinstance(data, list):  # older cache: English translation
+            c["words"], c["lang"] = data, "en"
             continue
-        pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", str(c["file"]), "-ac", "1", "-ar", "16000", "-f", "s16le", "-"],
-                             capture_output=True, check=True).stdout
-        audio = np.frombuffer(pcm, np.int16).astype(np.float32) / 32768.0
-        segs, _ = model.transcribe(audio, task=wcfg.get("task", "translate"), language=wcfg.get("language"),
-                                   vad_filter=True, word_timestamps=True, beam_size=5)
-        words = [(round(w.start, 2), round(w.end, 2), w.word) for s in segs for w in (s.words or [])]
-        save(tf, words)
-        c["words"] = words
-        log(f"  transcribed {c['file'].name}: {len(words)} words")
+        if data:
+            c["words"], c["lang"] = data["words"], data["lang"]
+            continue
+        audio = clip_audio(c["file"])
+        words, lang = run_whisper(wcfg, audio, "transcribe", language)
+        if lang not in INDIC and lang != "en":
+            words, _ = run_whisper(wcfg, audio, "translate", lang)
+            lang = "en"
+        save(tf, {"lang": lang, "words": words})
+        c["words"], c["lang"] = words, lang
+        log(f"  transcribed {c['file'].name} ({lang}): {len(words)} words")
+
+
+def english_words(c, wcfg):
+    """Fallback when romanizing fails: English translation of the clip."""
+    words, _ = run_whisper(wcfg, clip_audio(c["file"]), "translate", c["lang"])
+    return words
+
+
+def romanize(picks, clips):
+    """Hindi/Urdu words (Devanagari/Urdu script from Whisper) -> Roman-script Hinglish, word for word, so caption
+    timing is kept. One Claude call for all picked windows. Returns {clip_index: words} for the ones that worked."""
+    jobs = []
+    for p in picks:
+        c = clips[int(p["clip"])]
+        if c["lang"] in INDIC:
+            s, e = float(p["start"]), float(p["end"])
+            idx = [i for i, (a, b, w) in enumerate(c["words"]) if b > s and a < e and w.strip()]
+            if idx:
+                jobs.append((int(p["clip"]), c, idx))
+    claude = shutil.which("claude") or shutil.which("claude.cmd")
+    if not jobs or not claude:
+        return {}
+    body = ",\n".join(f'"{k}": ' + json.dumps([c["words"][i][2].strip() for i in idx], ensure_ascii=False)
+                     for k, c, idx in jobs)
+    prompt = f"""Convert these Hindi/Urdu livestream words to Roman-script Hinglish, the way Indian and Pakistani
+YouTubers write captions (e.g. "bhai", "kya kar raha hai", "yaar"). Words that are English (often written in
+Devanagari, like "गेम" or "ड्राइव") must come back in normal English spelling ("game", "drive").
+Return EXACTLY one output word per input word, same order, same count. Keep punctuation attached to its word.
+Reply with ONLY a JSON object with the same keys:
+{{
+{body}
+}}"""
+    try:
+        out = subprocess.run([claude, "-p", "--model", cfg.get("claude_model", "sonnet"), "--output-format", "text"],
+                             input=prompt, capture_output=True, text=True, encoding="utf-8", timeout=600).stdout
+        m = re.search(r"\{.*\}", out, re.S)
+        res = json.loads(m.group(0)) if m else {}
+    except Exception as e:
+        log(f"  romanizing failed: {e}")
+        return {}
+    done = {}
+    for k, c, idx in jobs:
+        rom = res.get(str(k))
+        if isinstance(rom, list) and len(rom) == len(idx):
+            w = list(c["words"])
+            for i, r in zip(idx, rom):
+                w[i] = (w[i][0], w[i][1], " " + str(r).strip())
+            done[k] = w
+    log(f"  romanized captions for {len(done)}/{len(jobs)} Hindi/Urdu shorts")
+    return done
 
 
 def transcript_text(words):
@@ -178,16 +253,22 @@ def choose_with_claude(stream_title, clips, lo, hi, keep_max):
         return None
     parts = []
     for i, c in enumerate(clips):
-        parts.append(f"### CLIP {i} (length {c['length']:.0f}s, loudest moment at {PRE}s)\n{transcript_text(c['words']) or '(no speech)'}")
+        lang = "Hindi/Urdu (Devanagari/Urdu script)" if c.get("lang") in INDIC else "English"
+        parts.append(f"### CLIP {i} (length {c['length']:.0f}s, loudest moment at {PRE}s, speech: {lang})\n{transcript_text(c['words']) or '(no speech)'}")
     prompt = f"""You are editing YouTube Shorts from a livestream: "{stream_title}".
-Below are candidate clips with timestamped transcripts (English translation of the streamer's speech; game dialogue may appear too).
+Below are candidate clips with timestamped transcripts of the streamer's speech (game dialogue may appear too).
 For each clip decide if it makes a strong Short. Pick the best continuous {lo}-{hi} second window: start right where the
 moment begins (no slow lead-in), end right after the payoff, and include the loudest moment at ~{PRE}s when it is part of it.
 Reject clips that are dead air, menus, sponsor plugs, or have no clear moment. Keep at most {keep_max}, best first.
 
 Write for each kept clip:
-- hook: 2-5 words, UPPERCASE, no emoji, makes people stay (what's happening, not clickbait lies)
-- title: under 70 characters, natural, may use one emoji, end with " #shorts"
+- hook: 2-6 words, UPPERCASE, no emoji. Create curiosity about the payoff so people keep watching
+  (e.g. "HE DID NOT EXPECT THIS", "WAIT FOR THE ENDING"), true to the clip, not clickbait lies.
+- title: under 80 characters incl. hashtags. Name the streamer, say what happens, one emoji at most, then
+  " #shorts" plus 1-2 hashtags (e.g. "#gta6 #carryminati").
+- LANGUAGE: for clips whose speech is Hindi/Urdu, write hook and title in Roman-script Hinglish as Indian/Pakistani
+  YouTubers do (e.g. hook "BHAI YE KYA HO GAYA", title "Carry bhai ne GTA 6 me ye kya kar diya 😭 #shorts #gta6").
+  For English clips write English.
 - tags: 3-6 short lowercase tags
 - scores: rate the chosen window 0-10 on each of
     hook (do the first 3 seconds grab attention?), engagement (reaction, energy, payoff),
@@ -227,7 +308,7 @@ def process(ch, url, force=False):
     try:
         info = ytdlp_json(url)
     except RuntimeError as e:
-        if BOT_BLOCK in str(e):
+        if any(k in str(e) for k in BOT_BLOCK):
             raise BotBlocked(str(e)) from None
         raise
     vid, title = info["id"], info.get("title", "")
@@ -271,7 +352,8 @@ def process(ch, url, force=False):
             if not c["cam"]:  # no template for this streamer (or it missed): find the facecam by its face
                 c["cam"] = find_facecam_auto(c["file"], PRE + POST)
         log(f"  facecam found in {sum(1 for c in clips if c['cam'])}/{len(clips)} clips")
-        transcribe(clips, {**cfg.get("whisper", {}), "language": ch.get("language", cfg.get("whisper", {}).get("language"))})
+        wcfg = cfg.get("whisper", {})
+        transcribe(clips, wcfg, ch.get("language", wcfg.get("language")))
 
         lo, hi, keep_max = cfg.get("short_min_seconds", 30), cfg.get("short_max_seconds", 40), cfg.get("max_shorts_per_stream", 6)
         picks = choose_with_claude(title, clips, lo, hi, keep_max)
@@ -288,6 +370,7 @@ def process(ch, url, force=False):
             log(f"  dropped {len(dropped)} low-scoring moments (< {min_score})")
         picks = sorted((p for p in picks if p not in dropped), key=lambda p: -(p["score"] or 0))[:keep_max]
         log(f"  selected {len(picks)} shorts ({how})")
+        roman = romanize(picks, clips)  # Hindi/Urdu speech -> Hinglish captions
 
         queue = load(QUEUE, [])
         made = 0
@@ -302,7 +385,10 @@ def process(ch, url, force=False):
             track = None if c["cam"] else track_face(c["file"], s, e - s)  # no facecam: follow the face (IRL cams)
             styles = cfg.get("caption_styles", ["karaoke", "punch"])
             style = styles[made % len(styles)]
-            render_short(c["file"], out, s, e - s, c["cam"], c["words"], p.get("hook", ""), peak=PRE,
+            words = roman.get(int(p["clip"])) or c["words"]
+            if c.get("lang") in INDIC and int(p["clip"]) not in roman:  # couldn't romanize: English captions instead
+                words = english_words(c, wcfg)
+            render_short(c["file"], out, s, e - s, c["cam"], words, p.get("hook", ""), peak=PRE,
                          track=track, caption_style=style)
             t_title = p.get("title") or f"{title[:55]} moment #shorts"
             queue = [q for q in queue if q["id"] != sid]
@@ -310,7 +396,8 @@ def process(ch, url, force=False):
                 "id": sid, "stream_id": vid, "stream_title": title, "channel": ch["name"],
                 "stream_time": c["peak_abs"], "file": out.relative_to(ROOT).as_posix(), "title": t_title[:100],
                 "hook": p.get("hook", ""), "tags": list(dict.fromkeys(ch.get("tags", []) + p.get("tags", [])))[:12],
-                "description": f"{t_title}\n\n{ch.get('credit', '')}\nFull stream: https://youtu.be/{vid}",
+                "description": f"{t_title}\n\n{ch.get('credit', '')}\nFull stream: https://youtu.be/{vid}\n\n"
+                               + " ".join("#" + re.sub(r"\W", "", t) for t in ["shorts", "gta6", ch["name"]] + p.get("tags", [])[:3] if re.sub(r"\W", "", t)),
                 "duration": round(e - s, 1), "created": now(), "status": "ready", "error": None, "attempts": 0,
                 "yt_id": None, "publish_at": None, "yt": {},
                 "score": p.get("score"), "scores": p.get("scores") or {},
@@ -325,7 +412,7 @@ def process(ch, url, force=False):
     except Exception as e:
         state = load(STATE, {"streams": {}, "runs": []})
         msg = str(e)
-        if BOT_BLOCK in msg:  # temporary YouTube block: retry next run without using up a retry
+        if any(k in msg for k in BOT_BLOCK):  # temporary YouTube block: retry next run without using up a retry
             state["streams"][vid].update({"status": "waiting", "error": "YouTube is blocking downloads for now (bot check). Retrying on the next run.",
                                           "retries": retries - 1, "finished": now()})
             save(STATE, state)

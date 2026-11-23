@@ -65,12 +65,19 @@
     "language": null
   },
   "upload": {
-    "per_day": 2,
+    "mode": "asap",
+    "gap_minutes": 60,
+    "max_per_day": 6,
+    "max_per_run": 4,
+    "per_day": 6,
     "times": [
       "13:00",
       "19:00"
     ],
-    "max_per_run": 4
+    "active_hours": [
+      9,
+      24
+    ]
   },
   "dashboard_url": "https://shorts-dashboard-ten.vercel.app",
   "title_keywords": [
@@ -92,7 +99,7 @@
     "min_views": 100000,
     "min_duration_minutes": 60
   },
-  "clip_every_hours": 3,
+  "clip_every_hours": 1,
   "min_virality_score": 5.5,
   "caption_styles": [
     "karaoke",

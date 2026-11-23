@@ -137,7 +137,8 @@ def snapshot(queue, upload_info):
     if os.environ.get("CLOUD_STATE") == "1":  # GitHub Actions: clip workflow runs at 00:00, 03:00, ... UTC
         from datetime import timezone
         u = datetime.now(timezone.utc)
-        nxt_utc = u.replace(minute=0, second=0, microsecond=0) + timedelta(hours=3 - u.hour % 3)
+        every = max(1, int(cfg.get("clip_every_hours", 1)))
+        nxt_utc = u.replace(minute=0, second=0, microsecond=0) + timedelta(hours=every - u.hour % every)
         sched = {"next_clip_run": nxt_utc.astimezone().isoformat()}
     try:  # when the scheduler will next look for new streams on its own
         if sched.get("next_clip_run"):
@@ -287,6 +288,9 @@ def remove_music(q, yt_factory):
 # ---------- uploading ----------
 def slots(queue):
     up = cfg.get("upload", {})
+    if up.get("mode") == "asap":
+        yield from asap_slots(queue, up)
+        return
     times = up.get("times", ["13:00", "19:00"])[: up.get("per_day", 2)]
     taken = {q["publish_at"][:16] for q in queue if q.get("publish_at")}
     t = datetime.now().astimezone() + timedelta(minutes=90)
@@ -300,11 +304,47 @@ def slots(queue):
         day += timedelta(days=1)
 
 
+def asap_slots(queue, up):
+    """Post as soon as possible: first slot ~20 min out, at least `gap_minutes` apart, at most `max_per_day`
+    per calendar day (local time). Clips do best in the first hours after a stream, so don't wait for fixed times."""
+    cap = up.get("max_per_day", 6)
+    start_h, end_h = up.get("active_hours", [9, 24])  # only post while the audience is awake (local time)
+    # spread a day's posts over the active hours (6 posts over 9:00-24:00 = every 2.5 h), never closer than gap_minutes
+    gap = max(timedelta(minutes=up.get("gap_minutes", 60)), timedelta(hours=(end_h - start_h) / max(cap, 1)))
+    now = datetime.now().astimezone()
+    taken = [datetime.fromisoformat(q["publish_at"].replace("Z", "+00:00")).astimezone()
+             for q in queue if q.get("publish_at")]
+    taken = [x for x in taken if x > now - timedelta(days=2)]
+    t = now + timedelta(minutes=20)
+    while True:
+        day0 = datetime(t.year, t.month, t.day).astimezone()
+        if t.hour < start_h:
+            t = day0 + timedelta(hours=start_h)
+        elif t.hour >= end_h:
+            t = day0 + timedelta(days=1, hours=start_h)
+            continue
+        same_day = sum(1 for x in taken if x.date() == t.date())
+        if same_day >= cap:
+            t = datetime(t.year, t.month, t.day).astimezone() + timedelta(days=1, hours=start_h)  # next day
+            continue
+        clash = [x for x in taken if abs(x - t) < gap]
+        if clash:
+            t = max(clash) + gap
+            continue
+        taken.append(t)
+        yield t
+        t += gap
+
+
 def upload_due(queue, yt):
     from googleapiclient.http import MediaFileUpload
     from googleapiclient.errors import HttpError
     up = cfg.get("upload", {})
-    todo = sorted((q for q in queue if q["status"] == "ready"), key=lambda q: (not q.get("priority"), -(q.get("score") or 0)))[: up.get("max_per_run", 4)]
+    ready = [q for q in queue if q["status"] == "ready"]
+    ready.sort(key=lambda q: -(q.get("score") or 0))          # best first ...
+    ready.sort(key=lambda q: q.get("created", ""), reverse=True)  # ... from the newest stream (clips age fast)
+    ready.sort(key=lambda q: not q.get("priority"))           # copyright fixes before everything
+    todo = ready[: up.get("max_per_run", 4)]
     gen = slots(queue)
     for q in todo:
         f = ensure_media(q)
