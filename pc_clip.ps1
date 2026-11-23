@@ -11,4 +11,5 @@ Copy-Item "$root\youtube\cookies.txt" "$data\youtube\cookies.txt" -Force   # spa
 if (-not (Test-Path "$PSScriptRoot\node_modules\@vercel\blob")) {
   Push-Location $PSScriptRoot; npm install --no-save --silent @vercel/blob@2.8.2; Pop-Location
 }
-python "$PSScriptRoot\pc_clip.py" *>> "$data\pc_clip.log"
+# cmd does the redirect: plain UTF-8 log, and warnings on stderr aren't turned into PowerShell errors
+cmd /c "python `"$PSScriptRoot\pc_clip.py`" >> `"$data\pc_clip.log`" 2>&1"

@@ -247,7 +247,7 @@ def transcript_text(words):
     return "\n".join(lines)
 
 
-def choose_with_claude(stream_title, clips, lo, hi, keep_max):
+def choose_with_claude(stream_title, clips, lo, hi, keep_max, streamer="the streamer"):
     claude = shutil.which("claude") or shutil.which("claude.cmd")
     if not claude:
         return None
@@ -255,7 +255,8 @@ def choose_with_claude(stream_title, clips, lo, hi, keep_max):
     for i, c in enumerate(clips):
         lang = "Hindi/Urdu (Devanagari/Urdu script)" if c.get("lang") in INDIC else "English"
         parts.append(f"### CLIP {i} (length {c['length']:.0f}s, loudest moment at {PRE}s, speech: {lang})\n{transcript_text(c['words']) or '(no speech)'}")
-    prompt = f"""You are editing YouTube Shorts from a livestream: "{stream_title}".
+    prompt = f"""You are editing YouTube Shorts from a livestream by {streamer}: "{stream_title}".
+In titles call the streamer by name ({streamer}, or the short name fans use, e.g. "Speed" for IShowSpeed, "Carry" for CarryMinati), never "Streamer".
 Below are candidate clips with timestamped transcripts of the streamer's speech (game dialogue may appear too).
 For each clip decide if it makes a strong Short. Pick the best continuous {lo}-{hi} second window: start right where the
 moment begins (no slow lead-in), end right after the payoff, and include the loudest moment at ~{PRE}s when it is part of it.
@@ -356,7 +357,7 @@ def process(ch, url, force=False):
         transcribe(clips, wcfg, ch.get("language", wcfg.get("language")))
 
         lo, hi, keep_max = cfg.get("short_min_seconds", 30), cfg.get("short_max_seconds", 40), cfg.get("max_shorts_per_stream", 6)
-        picks = choose_with_claude(title, clips, lo, hi, keep_max)
+        picks = choose_with_claude(title, clips, lo, hi, keep_max, ch.get("name", "the streamer"))
         how = "claude"
         if not picks:
             picks, how = choose_fallback(clips, lo, hi, keep_max), "fallback"
