@@ -447,6 +447,7 @@ def main():
     try:
         run_jobs(a)
     finally:
+        log = plain_log  # stop writing the lock file (matters when called again in the same process)
         LOCK.unlink(missing_ok=True)
 
 

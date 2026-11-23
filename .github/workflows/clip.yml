@@ -1,7 +1,6 @@
-name: Clip new GTA 6 streams
+name: Clip new GTA 6 streams (manual only)
+# Not scheduled: YouTube refuses downloads from GitHub's servers, so the PC clips (auto/pc_clip.ps1).
 on:
-  schedule:
-    - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
       url:

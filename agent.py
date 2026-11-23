@@ -133,6 +133,10 @@ def snapshot(queue, upload_info):
     streams = [{"id": k, **v} for k, v in state.get("streams", {}).items()]
     streams.sort(key=lambda s: s.get("started", ""), reverse=True)
     clip = running()
+    if os.environ.get("GITHUB_ACTIONS"):  # cloud: show what the PC is doing (it reports in while clipping)
+        st = load(DATA_AUTO / "clip_status.json", {})
+        fresh = st.get("updated") and datetime.fromisoformat(st["updated"]) > datetime.now().astimezone() - timedelta(minutes=30)
+        clip = st if st.get("running") and fresh else None
     sched = load(DATA_AUTO / "schedule.json", {})  # written by worker.py on a cloud server
     if os.environ.get("CLOUD_STATE") == "1":  # GitHub Actions: clip workflow runs at 00:00, 03:00, ... UTC
         from datetime import timezone
@@ -165,11 +169,14 @@ YT_URL = re.compile(r"^https://(www\.|m\.)?(youtube\.com/(watch\?v=|live/|shorts
 
 def start_clipping(trigger, url=None):
     """Start auto_clip.py in the background (it keeps running after this agent run ends)."""
-    if os.environ.get("CLOUD_STATE") == "1":  # GitHub Actions: start the clip workflow instead of a local process
-        args = ["gh", "workflow", "run", "clip.yml", "--repo", os.environ["GITHUB_REPOSITORY"]] + (["-f", f"url={url}"] if url else [])
-        r = subprocess.run(args, capture_output=True, text=True)
-        log(f"started clip workflow ({trigger}{': ' + url if url else ''})" if r.returncode == 0 else f"could not start clip workflow: {r.stderr[-200:]}")
-        return r.returncode == 0
+    if os.environ.get("GITHUB_ACTIONS"):  # cloud: YouTube blocks GitHub's downloads, so the PC does the clipping
+        f = DATA_AUTO / "clip_requests.json"
+        reqs = load(f, [])
+        if not any(r.get("url") == url for r in reqs):
+            reqs.append({"id": f"{now()}-{len(reqs)}", "url": url, "trigger": trigger, "requested": now()})
+            save(f, reqs)
+        log(f"queued clip request for the PC ({url or 'check for new streams'})")
+        return True
     if running():
         log("clipping already running; dashboard request ignored")
         return False
