@@ -51,7 +51,10 @@ def push_state():
         public_since = (q.get("yt") or {}).get("publish_at") or q.get("publish_at")
         old_public = ((q.get("yt") or {}).get("privacy") == "public" and public_since and
                       datetime.fromisoformat(public_since.replace("Z", "+00:00")) < now - timedelta(days=KEEP_AFTER_PUBLIC_DAYS))
-        done = q["status"] in ("deleted", "replaced", "skipped") or old_public
+        skipped_at = q.get("skipped_at")
+        old_skip = q["status"] == "skipped" and (not skipped_at or  # keep skipped videos 7 days so "Restore" works
+                   datetime.fromisoformat(skipped_at) < now - timedelta(days=7))
+        done = q["status"] in ("deleted", "replaced") or old_skip or old_public
         if done and q.get("stored"):
             _node("del", "media/" + q["file"])  # frees space in the 1 GB free store
             q["stored"] = False

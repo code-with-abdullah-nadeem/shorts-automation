@@ -204,6 +204,7 @@ def apply_actions(queue, actions, yt_factory):
             q.update(status="ready", error=None, attempts=0, yt_id=None, publish_at=None, yt={})
         elif act == "skip" and q["status"] in ("ready", "failed"):
             q["status"] = "skipped"
+            q["skipped_at"] = now()
         elif act == "unskip" and q["status"] == "skipped":
             q["status"] = "ready"
         elif act == "publish_now" and q.get("yt_id"):
@@ -308,7 +309,7 @@ def upload_due(queue, yt):
     for q in todo:
         f = ensure_media(q)
         if not f:
-            q.update(status="failed", error=f"video file missing: {q['file']}")
+            q.update(status="failed", error="Video no longer stored (it was skipped and cleaned up). Use 'Clip a stream' to remake it.")
             continue
         when = next(gen)
         body = {"snippet": {"title": q["title"][:100], "description": q.get("description", ""), "tags": q.get("tags", []),
