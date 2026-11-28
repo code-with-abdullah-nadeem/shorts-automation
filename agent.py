@@ -460,20 +460,31 @@ def main():
         if q["status"] == "uploading":
             q["status"] = "ready"
     _yt = []
-    get_yt = lambda: _yt[0] if _yt else (_yt.append(youtube()) or _yt[0])
+    auth_error = None
+    try:
+        _yt.append(youtube())
+    except (Exception, SystemExit) as e:  # e.g. the weekly sign-in expiry: keep the dashboard informed instead of crashing
+        auth_error = "YouTube sign-in expired. Run auto\reauth_youtube.ps1 on the PC to sign in again."
+        log(f"youtube sign-in failed: {e}")
+
+    def get_yt():
+        if not _yt:
+            raise RuntimeError(auth_error or "YouTube not available")
+        return _yt[0]
 
     resp = dashboard_call("/api/agent/sync", {"snapshot": snapshot(queue, {}), "phase": "start"})
     queue = apply_actions(queue, (resp or {}).get("actions"), get_yt)
     save_queue(queue)
-    if not a.no_upload:
+    if not a.no_upload and not auth_error:
         queue = upload_due(queue, get_yt())
     try:
-        queue = refresh_status(queue, get_yt())
+        if not auth_error:
+            queue = refresh_status(queue, get_yt())
     except (Exception, SystemExit) as e:  # not signed in yet / network: still push what we know
         log(f"status refresh failed: {e}")
     save_queue(queue)
     nxt = next(slots(queue))
-    resp = dashboard_call("/api/agent/sync", {"snapshot": snapshot(queue, {"next_slot": nxt.isoformat()}), "phase": "end"})
+    resp = dashboard_call("/api/agent/sync", {"snapshot": snapshot(queue, {"next_slot": nxt.isoformat(), "auth_error": auth_error}), "phase": "end"})
     save_queue(queue)  # keeps thumbnails generated for the snapshot
     if resp and resp.get("actions"):  # clicked while we were uploading: handle now
         queue = apply_actions(queue, resp["actions"], get_yt)
